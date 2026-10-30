@@ -64,9 +64,24 @@ make start     # → open http://127.0.0.1:8090/
 | `scripts/web-setup.sh` | installs the wasm toolchain (wasi-sdk, wasm-bindgen, binaryen) |
 | `scripts/web-build.sh` | builds the client into `web/dist/` |
 
-**Prerequisites:** [Rust](https://rustup.rs/), `make`, `curl`, `unzip`, and a bash shell. On Windows, run everything from Git Bash; PowerShell and cmd can't run the scripts.
+**Prerequisites:** [Rust](https://rustup.rs/), `make`, `curl`, `unzip`, and a bash shell. On Windows, run `make build` from Git Bash; PowerShell and cmd can't run the bash scripts (for the native desktop build from plain PowerShell, see below).
 
 Run `make` (or `make help`) to list every target.
+
+### Windows: native desktop build from PowerShell
+
+No Git Bash, `make` or `unzip` needed. Install [Rust](https://rustup.rs/) and the
+[Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) (the
+"Desktop development with C++" workload), then from the repo root:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
+```
+
+It checks the toolchain, fetches the game data into `wow-data\Data` (the same ~5.5 GB download as
+`make build`, resumable, skipped when already present), then builds and runs the native game
+(`make native`'s `cargo run --release -p warcraft-survivors`). Pass `-NoRun` to build without
+launching. This covers the native build only; the browser build above still uses the bash scripts.
 
 ## Controls
 
