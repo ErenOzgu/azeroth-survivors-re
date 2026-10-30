@@ -1,0 +1,93 @@
+# Builds the Windows player build of warcraft-survivors and wraps it in an Inno Setup installer
+# (installer/azeroth-survivors.iss) that asks where to install and downloads the game data.
+#
+# Every run uploads the Setup.exe as an artifact; a `v*` tag also attaches it to a GitHub release.
+# The installer holds no Blizzard content: the data is downloaded by the installer on the user's
+# machine, as scripts/fetch-data.sh does.
+name: windows-installer
+
+on:
+  push:
+    branches: [feat/windows-installer]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-installer-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The build stamp runs `git describe --tags` and reads the commit date.
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Toolchain
+        run: |
+          rustup toolchain install
+          rustc -V
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: windows-installer
+      # The player build: without `dev`, which would stamp this runner's source path into the exe
+      # and compile in the instruments.
+      - name: Build warcraft-survivors (player build)
+        run: cargo build --release -p warcraft-survivors --no-default-features
+      - name: Version
+        id: ver
+        run: |
+          if ($env:GITHUB_REF -like 'refs/tags/v*') {
+            $v = $env:GITHUB_REF_NAME.TrimStart('v')
+          } else {
+            $base = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+            $v = "$base-$($env:GITHUB_SHA.Substring(0, 7))"
+          }
+          "version=$v" >> $env:GITHUB_OUTPUT
+          "version: $v"
+      - name: Inno Setup
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup --no-progress -y
+            if ($LASTEXITCODE -ne 0) { throw 'choco install innosetup failed' }
+          }
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe not found at $iscc" }
+          "ISCC=$iscc" >> $env:GITHUB_ENV
+      - name: Build the installer
+        run: |
+          & $env:ISCC "/DAppVersion=${{ steps.ver.outputs.version }}" "/DBuildDir=$PWD\target\release" installer\azeroth-survivors.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE" }
+          Get-ChildItem installer\output | Format-Table Name, Length
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AzerothSurvivors-Setup
+          path: installer/output/*.exe
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: installer
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: AzerothSurvivors-Setup
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+          gh release upload "$GITHUB_REF_NAME" ./*.exe -R "$GITHUB_REPOSITORY" --clobber
