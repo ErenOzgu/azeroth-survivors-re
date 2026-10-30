@@ -1,6 +1,9 @@
 # Throwaway: runs scripts/setup.ps1 end to end on a Windows runner against a tiny fake game-data
 # zip served over file://, so the script is exercised for real without the 5.5 GB download.
 # Lives on its own branch in a fork; it is not part of the pull request.
+#
+#   full-run   the whole script with the real cargo (toolchain checks, download, extract, build)
+#   data-flow  the data steps again and again with a stand-in cargo, so they finish in minutes
 name: test-setup-ps1
 
 on:
@@ -11,13 +14,14 @@ on:
 permissions:
   contents: read
 
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
 jobs:
-  setup-ps1:
+  full-run:
     runs-on: windows-latest
     timeout-minutes: 90
-    env:
-      CARGO_TERM_COLOR: always
-      CARGO_INCREMENTAL: 0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -51,7 +55,7 @@ jobs:
           "FAKE_URL=$url" >> $env:GITHUB_ENV
           "fake zip: $zipPath ($((Get-Item $zipPath).Length) bytes), url $url"
 
-      - name: First run - toolchain checks, download, extract, build
+      - name: Toolchain checks, download, extract, build (real cargo)
         shell: powershell
         run: |
           $dd = Join-Path $env:RUNNER_TEMP 'wow data'
@@ -65,43 +69,111 @@ jobs:
           if (Test-Path (Join-Path $dd '1.12.1-5875_enUS.zip')) { $fails += 'the zip was not removed' }
           if (-not (Test-Path 'target\release\warcraft-survivors.exe')) { $fails += 'warcraft-survivors.exe was not built' }
           if ($fails.Count -gt 0) { $fails | ForEach-Object { Write-Host "FAIL $_" }; exit 1 }
-          'first run OK'
+          'full run OK'
+
+  data-flow:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Fake game-data zip and a stand-in cargo
+        shell: powershell
+        run: |
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $dir = Join-Path $env:RUNNER_TEMP 'fake'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $zipPath = Join-Path $dir '1.12.1-5875_enUS.zip'
+          $zip = [IO.Compression.ZipFile]::Open($zipPath, 'Create')
+          foreach ($name in @('Data/terrain.MPQ', 'Data/patch.MPQ', 'Data/enUS/base-enUS.MPQ', 'readme.txt')) {
+            $entry = $zip.CreateEntry($name)
+            $s = $entry.Open()
+            $b = [Text.Encoding]::ASCII.GetBytes("fake $name " + ('x' * 2000))
+            $s.Write($b, 0, $b.Length); $s.Dispose()
+          }
+          $zip.Dispose()
+          "FAKE_ZIP=$zipPath" >> $env:GITHUB_ENV
+          "FAKE_URL=$(([Uri]$zipPath).AbsoluteUri)" >> $env:GITHUB_ENV
+          # setup.ps1 only needs `cargo` to exist and exit 0 here; the build is covered by full-run.
+          $shim = Join-Path $env:RUNNER_TEMP 'shim'
+          New-Item -ItemType Directory -Force -Path $shim | Out-Null
+          Set-Content -Path (Join-Path $shim 'cargo.cmd') -Value "@echo off`r`necho [cargo stand-in] %*`r`nexit /b 0"
+          $shim >> $env:GITHUB_PATH
+
+      - name: Download and extract
+        shell: powershell
+        run: |
+          function Fail([string]$m) {
+            $e = $m -replace '%', '%25' -replace "`r", '%0D' -replace "`n", '%0A'
+            Write-Host "::error::$e"; exit 1
+          }
+          try {
+            $dd = Join-Path $env:RUNNER_TEMP 'wow data'
+            $out = & .\scripts\setup.ps1 -NoRun -DataUrl $env:FAKE_URL -DataDir $dd 6>&1 | Out-String
+            if ($LASTEXITCODE -ne 0) { Fail "setup.ps1 exited with $LASTEXITCODE. Output: $out" }
+            foreach ($p in @('Data\terrain.MPQ', 'Data\patch.MPQ', 'Data\enUS\base-enUS.MPQ')) {
+              if (-not (Test-Path (Join-Path $dd $p))) { Fail "missing $p. Output: $out" }
+            }
+            if (Test-Path (Join-Path $dd 'readme.txt')) { Fail 'readme.txt was extracted' }
+            if (Test-Path (Join-Path $dd '1.12.1-5875_enUS.zip')) { Fail 'the zip was not removed' }
+            $out
+          } catch { Fail "$($_.Exception.Message) | $($_.InvocationInfo.PositionMessage)" }
 
       - name: Second run - data present, no download is attempted
         shell: powershell
         run: |
-          $dd = Join-Path $env:RUNNER_TEMP 'wow data'
-          # A URL that cannot be fetched: any download attempt would fail the run.
-          $out = & .\scripts\setup.ps1 -NoRun -DataUrl 'file:///does/not/exist/1.12.1-5875_enUS.zip' -DataDir $dd *>&1 | Out-String
-          if ($LASTEXITCODE -ne 0) { Write-Host $out; throw "setup.ps1 exited with $LASTEXITCODE" }
-          if ($out -notmatch 'already present') { Write-Host $out; throw 'did not report the data as already present' }
-          'second run OK'
+          function Fail([string]$m) {
+            $e = $m -replace '%', '%25' -replace "`r", '%0D' -replace "`n", '%0A'
+            Write-Host "::error::$e"; exit 1
+          }
+          try {
+            $dd = Join-Path $env:RUNNER_TEMP 'wow data'
+            # A URL that cannot be fetched: any download attempt would fail the run.
+            $out = & .\scripts\setup.ps1 -NoRun -DataUrl 'file:///does/not/exist/1.12.1-5875_enUS.zip' -DataDir $dd 6>&1 | Out-String
+            if ($LASTEXITCODE -ne 0) { Fail "setup.ps1 exited with $LASTEXITCODE. Output: $out" }
+            if ($out -notmatch 'already present') { Fail "did not report the data as already present. Output: $out" }
+            $out
+          } catch { Fail "$($_.Exception.Message) | $($_.InvocationInfo.PositionMessage)" }
 
       - name: Interrupted download - a truncated zip is resumed, not trusted
         shell: powershell
         run: |
-          $dd = Join-Path $env:RUNNER_TEMP 'wow data resume'
-          New-Item -ItemType Directory -Force -Path $dd | Out-Null
-          $bytes = [IO.File]::ReadAllBytes($env:FAKE_ZIP)
-          $half = [byte[]]($bytes[0..([int]($bytes.Length / 2) - 1)])
-          [IO.File]::WriteAllBytes((Join-Path $dd '1.12.1-5875_enUS.zip'), $half)
-          & .\scripts\setup.ps1 -NoRun -DataUrl $env:FAKE_URL -DataDir $dd
-          if ($LASTEXITCODE -ne 0) { throw "setup.ps1 exited with $LASTEXITCODE" }
-          foreach ($p in @('Data\terrain.MPQ', 'Data\patch.MPQ')) {
-            if (-not (Test-Path (Join-Path $dd $p))) { throw "missing $p after resuming" }
+          function Fail([string]$m) {
+            $e = $m -replace '%', '%25' -replace "`r", '%0D' -replace "`n", '%0A'
+            Write-Host "::error::$e"; exit 1
           }
-          'resume OK'
+          try {
+            $dd = Join-Path $env:RUNNER_TEMP 'wow data resume'
+            New-Item -ItemType Directory -Force -Path $dd | Out-Null
+            $bytes = [IO.File]::ReadAllBytes($env:FAKE_ZIP)
+            $half = [byte[]]($bytes[0..([int]($bytes.Length / 2) - 1)])
+            [IO.File]::WriteAllBytes((Join-Path $dd '1.12.1-5875_enUS.zip'), $half)
+            $out = & .\scripts\setup.ps1 -NoRun -DataUrl $env:FAKE_URL -DataDir $dd 6>&1 | Out-String
+            if ($LASTEXITCODE -ne 0) { Fail "setup.ps1 exited with $LASTEXITCODE. Output: $out" }
+            foreach ($p in @('Data\terrain.MPQ', 'Data\patch.MPQ')) {
+              if (-not (Test-Path (Join-Path $dd $p))) { Fail "missing $p after resuming. Output: $out" }
+            }
+            $out
+          } catch { Fail "$($_.Exception.Message) | $($_.InvocationInfo.PositionMessage)" }
 
       - name: A complete zip already on disk is used without downloading
         shell: powershell
         run: |
-          $dd = Join-Path $env:RUNNER_TEMP 'wow data complete'
-          New-Item -ItemType Directory -Force -Path $dd | Out-Null
-          Copy-Item $env:FAKE_ZIP (Join-Path $dd '1.12.1-5875_enUS.zip')
-          # The same file name, a URL that cannot be fetched.
-          & .\scripts\setup.ps1 -NoRun -DataUrl 'file:///does/not/exist/1.12.1-5875_enUS.zip' -DataDir $dd
-          if ($LASTEXITCODE -ne 0) { throw "setup.ps1 exited with $LASTEXITCODE" }
-          foreach ($p in @('Data\terrain.MPQ', 'Data\patch.MPQ')) {
-            if (-not (Test-Path (Join-Path $dd $p))) { throw "missing $p" }
+          function Fail([string]$m) {
+            $e = $m -replace '%', '%25' -replace "`r", '%0D' -replace "`n", '%0A'
+            Write-Host "::error::$e"; exit 1
           }
-          'complete-zip OK'
+          try {
+            $dd = Join-Path $env:RUNNER_TEMP 'wow data complete'
+            New-Item -ItemType Directory -Force -Path $dd | Out-Null
+            Copy-Item $env:FAKE_ZIP (Join-Path $dd '1.12.1-5875_enUS.zip')
+            # The same file name, a URL that cannot be fetched.
+            $out = & .\scripts\setup.ps1 -NoRun -DataUrl 'file:///does/not/exist/1.12.1-5875_enUS.zip' -DataDir $dd 6>&1 | Out-String
+            if ($LASTEXITCODE -ne 0) { Fail "setup.ps1 exited with $LASTEXITCODE. Output: $out" }
+            foreach ($p in @('Data\terrain.MPQ', 'Data\patch.MPQ')) {
+              if (-not (Test-Path (Join-Path $dd $p))) { Fail "missing $p. Output: $out" }
+            }
+            $out
+          } catch { Fail "$($_.Exception.Message) | $($_.InvocationInfo.PositionMessage)" }
