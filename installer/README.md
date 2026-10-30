@@ -20,6 +20,13 @@ iscc /DAppVersion=0.2.0 installer\azeroth-survivors.iss   # -> installer\output\
 Notes:
 
 - Per-user install (no admin prompt): the game writes its settings to `<install dir>\benilla-config`.
-- The download goes to the user's `%TEMP%` first, then the MPQs are extracted into the install
-  folder, so both drives need about 5.5 GB free at that point.
+- The wizard asks where the game data comes from: download it, or use data the user already has by
+  pointing at a folder. The folder may hold `1.12.1-5875_enUS.zip` (or another zip), or be the WoW
+  `Data` folder (or the folder above it) with the `.MPQ` files; nothing is downloaded then, and the
+  question is skipped when the install folder already has `Data\terrain.MPQ` and `Data\patch.MPQ`.
+- A download goes to the user's `%TEMP%` first, then the MPQs are extracted into the install
+  folder, so both drives need about 5.5 GB free at that point. A folder of MPQs is copied, not
+  linked, so the install keeps its own copy.
 - The download is interactive only (it runs when the user clicks Install); `/SILENT` installs skip it.
+- `test-extract-data.ps1` tests the helper (`extract-data.ps1`); CI runs it, and compiles the `.iss`
+  with a stand-in exe, before the full build starts.

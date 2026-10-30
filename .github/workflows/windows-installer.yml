@@ -20,7 +20,36 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Quick: the helper script's behaviour and the installer script's syntax, in about a minute, so a
+  # mistake there does not wait behind the full build.
+  check:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: extract-data.ps1 tests
+        run: ./installer/test-extract-data.ps1
+      - name: Inno Setup
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup --no-progress -y
+            if ($LASTEXITCODE -ne 0) { throw 'choco install innosetup failed' }
+          }
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe not found at $iscc" }
+          "ISCC=$iscc" >> $env:GITHUB_ENV
+      # A stand-in exe: this only checks that the .iss compiles, the real one comes from the build.
+      - name: The installer script compiles
+        run: |
+          New-Item -ItemType Directory -Force target\release | Out-Null
+          Set-Content -Path target\release\warcraft-survivors.exe -Value 'stub'
+          & $env:ISCC "/DAppVersion=0.0.0-check" "/DBuildDir=$PWD\target\release" installer\azeroth-survivors.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE" }
+
   installer:
+    needs: check
     runs-on: windows-latest
     timeout-minutes: 120
     env:
