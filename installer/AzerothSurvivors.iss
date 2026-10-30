@@ -6,7 +6,7 @@
 
 #define AppName "Azeroth Survivors"
 #define AppVersion "0.1.0"
-#define RepoUrl "https://github.com/OutThisLife/azeroth-survivors-re"
+#define RepoUrl "https://github.com/ErenOzgu/azeroth-survivors-re"
 
 [Setup]
 AppId={{7AE0CE40-185E-4716-A5B0-E1D338DA1345}

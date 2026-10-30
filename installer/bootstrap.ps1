@@ -13,7 +13,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$InstallDir,
     [Parameter(Mandatory = $true)][string]$WowData,
-    [string]$RepoUrl = 'https://github.com/OutThisLife/azeroth-survivors-re',
+    [string]$RepoUrl = 'https://github.com/ErenOzgu/azeroth-survivors-re',
     [string]$Ref = 'main'
 )
 
